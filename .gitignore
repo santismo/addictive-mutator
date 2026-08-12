@@ -38,3 +38,7 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# Swift Package Manager
+desktop/.build/
+desktop/build/
