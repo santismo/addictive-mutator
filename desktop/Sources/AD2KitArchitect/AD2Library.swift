@@ -13,6 +13,11 @@ struct UserPreset: Identifiable, Hashable {
     let name: String
 }
 
+struct LogicPreset: Identifiable, Hashable {
+    let id: URL
+    let name: String
+}
+
 @MainActor
 final class AD2Library: ObservableObject {
     @Published private(set) var isScanning = true
@@ -20,6 +25,7 @@ final class AD2Library: ObservableObject {
     @Published private(set) var userFolder = URL(fileURLWithPath: "/")
     @Published private(set) var packs: [InstalledPack] = []
     @Published private(set) var userPresets: [UserPreset] = []
+    @Published private(set) var logicPresets: [LogicPreset] = []
 
     var adPaks: [InstalledPack] { packs.filter { $0.kind == .adPak } }
     var kitPiecePaks: [InstalledPack] { packs.filter { $0.kind == .kitPiecePak } }
@@ -30,6 +36,13 @@ final class AD2Library: ObservableObject {
             .appending(path: "Library/Application Support/Addictive Drums 2", directoryHint: .isDirectory)
     }
     private let soundDataRoot = URL(fileURLWithPath: "/Library/Application Support/XLN Audio/Addictive Drums 2/Sound Data", isDirectory: true)
+    var logicPresetFolder: URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appending(path: "Library/Audio/Presets/XLN Audio/Addictive Drums 2", directoryHint: .isDirectory)
+    }
+    var generatedLogicPresetFolder: URL {
+        logicPresetFolder.appending(path: "generated presets", directoryHint: .isDirectory)
+    }
 
     func scan() {
         isScanning = true
@@ -37,6 +50,7 @@ final class AD2Library: ObservableObject {
         isInstalled = fileManager.fileExists(atPath: root.path(percentEncoded: false))
         userFolder = locateUserPresetFolder(in: root) ?? root
         userPresets = scanUserPresets(at: userFolder)
+        logicPresets = scanLogicPresets()
         packs = scanPacks()
         isScanning = false
     }
@@ -58,6 +72,15 @@ final class AD2Library: ObservableObject {
         return files
             .filter { $0.pathExtension.caseInsensitiveCompare("AD2Preset") == .orderedSame }
             .map { UserPreset(id: $0, name: $0.deletingPathExtension().lastPathComponent) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func scanLogicPresets() -> [LogicPreset] {
+        guard let files = try? fileManager.contentsOfDirectory(at: logicPresetFolder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return [] }
+        return files
+            .filter { $0.pathExtension.caseInsensitiveCompare("aupreset") == .orderedSame }
+            .filter { $0.deletingPathExtension().lastPathComponent != "#default" }
+            .map { LogicPreset(id: $0, name: $0.deletingPathExtension().lastPathComponent) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 

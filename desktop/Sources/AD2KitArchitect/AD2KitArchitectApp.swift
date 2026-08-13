@@ -15,6 +15,7 @@ struct AD2KitArchitectApp: App {
 struct ContentView: View {
     @StateObject private var library = AD2Library()
     @StateObject private var architect = Architect()
+    @StateObject private var logicGenerator = LogicPresetGenerator()
 
     var body: some View {
         ZStack {
@@ -27,6 +28,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 28) {
                         header
                         libraryCard
+                        logicBlendCard
                         briefCard
                         directionCard
                         safetyNote
@@ -43,6 +45,9 @@ struct ContentView: View {
         }
         .onChange(of: library.packs) {
             architect.generate(using: library)
+        }
+        .onChange(of: library.logicPresets) {
+            logicGenerator.syncPresets(library.logicPresets)
         }
     }
 
@@ -107,6 +112,7 @@ struct ContentView: View {
                         Stat(value: "\(library.adPaks.count)", label: "ADpaks")
                         Stat(value: "\(library.kitPiecePaks.count)", label: "Kitpiece Paks")
                         Stat(value: "\(library.userPresets.count)", label: "User Presets")
+                        Stat(value: "\(library.logicPresets.count)", label: "Logic Presets")
                     }
                     if !library.adPaks.isEmpty {
                         VStack(alignment: .leading, spacing: 9) {
@@ -146,6 +152,106 @@ struct ContentView: View {
             EmptyView()
         }
         .groupBoxStyle(CardGroupBoxStyle())
+    }
+
+    private var logicBlendCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("CREATE A REAL LOGIC PRESET")
+                            .sectionLabel()
+                        Text("Blend your existing AD2 presets")
+                            .font(.title3.weight(.medium))
+                        Text("The base supplies the kit and internal AD2 state. The influence contributes every AD2 parameter Logic exposes to the host. New files go to your ‘generated presets’ folder.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.title2)
+                        .foregroundStyle(Color.coral)
+                }
+
+                if library.logicPresets.isEmpty {
+                    Text("No Logic AD2 presets found in ~/Library/Audio/Presets/XLN Audio/Addictive Drums 2.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 16) {
+                        presetPicker(title: "BASE", selection: $logicGenerator.basePresetURL)
+                        Image(systemName: "arrow.right")
+                            .foregroundStyle(Color.coral)
+                            .padding(.top, 17)
+                        presetPicker(title: "INFLUENCE", selection: $logicGenerator.influencePresetURL)
+                    }
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text("BLEND").sectionLabel()
+                            Spacer()
+                            Text("\(Int(logicGenerator.blendAmount * 100))% influence")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $logicGenerator.blendAmount, in: 0...1)
+                            .tint(Color.coral)
+                        HStack { Text("Keep base"); Spacer(); Text("Use influence") }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(alignment: .bottom, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("NEW LOGIC PRESET NAME").sectionLabel()
+                            TextField("Preset name", text: $logicGenerator.outputName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 270)
+                        }
+                        Button {
+                            Task {
+                                await logicGenerator.createPreset(in: library)
+                                if case .success = logicGenerator.status { library.scan() }
+                            }
+                        } label: {
+                            if logicGenerator.isCreating {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Label("Create .aupreset", systemImage: "square.and.arrow.down")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.coral)
+                        .disabled(logicGenerator.isCreating)
+                    }
+
+                    switch logicGenerator.status {
+                    case .idle: EmptyView()
+                    case .working(let message): Label(message, systemImage: "gearshape.2").statusLine(color: .secondary)
+                    case .success(let message): Label(message, systemImage: "checkmark.circle.fill").statusLine(color: .green)
+                    case .failure(let message): Label(message, systemImage: "exclamationmark.triangle.fill").statusLine(color: .red)
+                    }
+                }
+            }
+            .padding(5)
+        } label: { EmptyView() }
+        .groupBoxStyle(CardGroupBoxStyle())
+    }
+
+    private func presetPicker(title: String, selection: Binding<URL?>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).sectionLabel()
+            Picker(title, selection: selection) {
+                ForEach(library.logicPresets) { preset in
+                    Text(preset.name).tag(Optional(preset.id))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var briefCard: some View {
@@ -357,4 +463,12 @@ private extension Color {
     static let card = Color(red: 0.118, green: 0.112, blue: 0.105)
     static let coral = Color(red: 1.0, green: 0.38, blue: 0.25)
     static let coralLight = Color(red: 1.0, green: 0.60, blue: 0.48)
+}
+
+private extension Label where Title == Text, Icon == Image {
+    func statusLine(color: Color) -> some View {
+        self.font(.caption)
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
 }
