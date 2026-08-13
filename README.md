@@ -4,12 +4,12 @@ An open-source, procedural companion for Addictive Drums 2.
 
 The project has two parts:
 
-- `desktop/` — the macOS SwiftUI companion app. This is the real product direction: it discovers the AD2 library installed on the Mac, lists available ADpaks/Kitpiece Paks and user presets, and makes deterministic build sheets.
+- `desktop/` — the macOS SwiftUI Logic-preset studio. This is the real product direction: it combines existing Logic AD2 presets and creates fresh, loadable `.aupreset` hybrids.
 - `app/` — an earlier browser-based interaction prototype. It demonstrates the generator controls but cannot read or write local AD2 files.
 
 ## Native app
 
-The macOS app reads only safe filesystem metadata: installed content-package names and the names of user presets. It never opens AD2 content packages or parses `.AD2Preset` files.
+The macOS app works only with Logic `.aupreset` files. It does not scan the AD2 sample library or parse `.AD2Preset` files. It creates a base-kit preset with blended Logic-exposed mix parameters; it does not mix individual AD2 kit pieces between presets.
 
 ```bash
 cd desktop
