@@ -2,38 +2,96 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-enum KitMutationTarget: String, CaseIterable, Identifiable {
-    case kickNext, snareNext, hihatNext, tom1Next, tom2Next, tom3Next, tom4Next, crash1Next, crash2Next, rideNext, flexi1Next, flexi2Next
+enum KitPiece: String, CaseIterable, Identifiable {
+    // Keep the existing raw values for Cym 1–3 and Ride 1: they are the keys
+    // under which the user's earlier captures are already persisted.
+    case kick, snare, hihat, tom1, tom2, tom3, tom4
+    case crash1, crash2, crash3, crash4, crash5, crash6
+    case ride, ride2
+    case flexi1, flexi2, flexi3
 
     var id: String { rawValue }
     var name: String {
         switch self {
-        case .kickNext: "Kick — next"
-        case .snareNext: "Snare — next"
-        case .hihatNext: "Hi-hat — next"
-        case .tom1Next: "Tom 1 — next"
-        case .tom2Next: "Tom 2 — next"
-        case .tom3Next: "Tom 3 — next"
-        case .tom4Next: "Tom 4 — next"
-        case .crash1Next: "Crash 1 — next"
-        case .crash2Next: "Crash 2 — next"
-        case .rideNext: "Ride — next"
-        case .flexi1Next: "Flexi 1 — next"
-        case .flexi2Next: "Flexi 2 — next"
+        case .kick: "Kick"
+        case .snare: "Snare"
+        case .hihat: "Hi-hat"
+        case .tom1: "Tom 1"
+        case .tom2: "Tom 2"
+        case .tom3: "Tom 3"
+        case .tom4: "Tom 4"
+        case .crash1: "Cymbal 1"
+        case .crash2: "Cymbal 2"
+        case .crash3: "Cymbal 3"
+        case .crash4: "Cymbal 4"
+        case .crash5: "Cymbal 5"
+        case .crash6: "Cymbal 6"
+        case .ride: "Ride 1"
+        case .ride2: "Ride 2"
+        case .flexi1: "Flexi 1"
+        case .flexi2: "Flexi 2"
+        case .flexi3: "Flexi 3"
         }
     }
+
+    /// Physical Kit-page order: it reduces travel across the editor and makes
+    /// every all-pieces run predictable. Existing stored keys stay intact.
+    var kitPageOrder: Int {
+        switch self {
+        case .crash1: 0
+        case .crash2: 1
+        case .crash3: 2
+        case .crash4: 3
+        case .crash5: 4
+        case .crash6: 5
+        case .tom1: 6
+        case .tom2: 7
+        case .tom3: 8
+        case .tom4: 9
+        case .ride: 10
+        case .ride2: 11
+        case .kick: 12
+        case .snare: 13
+        case .hihat: 14
+        case .flexi1: 15
+        case .flexi2: 16
+        case .flexi3: 17
+        }
+    }
+
+    static let kitPageRows: [[KitPiece]] = [
+        [.crash1, .crash2, .crash3, .crash4, .crash5, .crash6],
+        [.tom1, .tom2, .tom3, .tom4, .ride, .ride2],
+        [.kick, .snare, .hihat, .flexi1, .flexi2, .flexi3]
+    ]
 }
 
-enum SaveTarget: String, CaseIterable, Identifiable {
-    case savePreset, presetName, confirmSave
+enum KitArrow: String, CaseIterable, Identifiable {
+    case up, down
     var id: String { rawValue }
-    var name: String {
-        switch self {
-        case .savePreset: "Save button"
-        case .presetName: "Name field"
-        case .confirmSave: "Final Save"
-        }
-    }
+    var name: String { rawValue.capitalized }
+    var symbol: String { self == .up ? "arrow.up" : "arrow.down" }
+}
+
+enum PointerMode: String, CaseIterable, Identifiable {
+    case quiet, visible
+    var id: String { rawValue }
+    var name: String { self == .quiet ? "Quiet" : "Visible" }
+}
+
+enum AutomationTarget: String, CaseIterable, Identifiable {
+    case standalone, logicPro
+    var id: String { rawValue }
+    var name: String { self == .standalone ? "AD2 Standalone" : "Logic Pro AD2" }
+    var bundleIdentifier: String { self == .standalone ? "com.xlnaudio.addictivedrums2" : "com.apple.logic10" }
+}
+
+struct KitMutationTarget: Hashable, Identifiable {
+    let piece: KitPiece
+    let arrow: KitArrow
+
+    var id: String { "\(piece.rawValue).\(arrow.rawValue)" }
+    var name: String { "\(piece.name) — \(arrow.name)" }
 }
 
 private struct ScreenPoint: Codable, Equatable {
@@ -43,8 +101,32 @@ private struct ScreenPoint: Codable, Equatable {
     init(_ point: CGPoint) { x = point.x; y = point.y }
 }
 
+private struct CalibratedPoint: Codable, Equatable {
+    let screen: ScreenPoint
+    /// Offset from the standalone AD2 window's top-left corner. It allows
+    /// calibration to survive moving that window anywhere on the display.
+    let ad2WindowOffset: ScreenPoint?
+    /// The window dimensions at capture time. When AD2 is resized, the offset
+    /// is scaled proportionally before the click is sent.
+    let ad2WindowSize: ScreenPoint?
+    /// Logic can have several simultaneous windows. Retaining the editor
+    /// title lets resolution choose the AD2 editor instead of the Arrange
+    /// window when a zoom/layout change alters focus.
+    let ad2WindowTitle: String?
+}
+
 private struct CalibrationProfile: Codable {
+    var points: [String: CalibratedPoint] = [:]
+}
+
+private struct LegacyCalibrationProfile: Codable {
     var points: [String: ScreenPoint] = [:]
+}
+
+private struct AD2WindowFrame {
+    let origin: CGPoint
+    let size: CGSize
+    let title: String?
 }
 
 struct MutationRecipe {
@@ -67,27 +149,98 @@ final class AD2KitMutator: ObservableObject {
 
     @Published private(set) var accessibilityGranted = false
     private var profile = CalibrationProfile()
-    @Published var mutationDepth = 4
-    @Published var presetName = "AD2 Hybrid 001"
+    @Published var pointerMode: PointerMode = .quiet
+    @Published var clickIntervalMilliseconds: Double {
+        didSet {
+            UserDefaults.standard.set(clickIntervalMilliseconds, forKey: clickIntervalKey)
+        }
+    }
+    @Published var automationTarget: AutomationTarget = .standalone {
+        didSet { loadEnabledPieces() }
+    }
+    /// Direct standalone points always win. This lets a matching Logic Kit
+    /// layout supply only the standalone controls that have not been mapped.
+    @Published var useLogicCalibrationForStandalone = true {
+        didSet { UserDefaults.standard.set(useLogicCalibrationForStandalone, forKey: logicFallbackKey) }
+    }
+    @Published private(set) var enabledPieces: Set<KitPiece> = Set(KitPiece.allCases)
     @Published private(set) var isRunning = false
+    @Published private(set) var isCapturing = false
     @Published private(set) var status: Status = .idle
     @Published private(set) var lastRecipe: MutationRecipe?
+    @Published private(set) var lastCaptureDetail: String?
 
-    private let profileKey = "AD2KitMutator.calibration.v1"
-    private let ad2BundleIdentifier = "com.xlnaudio.addictivedrums2"
-    private let automationDelay: UInt64 = 170_000_000
+    // v5 keeps standalone and Logic calibrations separately. The user can
+    // explicitly opt into a Logic point as a standalone fallback.
+    // Earlier formats store a relative point and its calibration window size.
+    // point-only formats are migrated, so a normal update does not make the
+    // user recapture every control.
+    private let profileKey = "AD2KitMutator.calibration.v5"
+    private let previousProfileKey = "AD2KitMutator.calibration.v4"
+    private let legacyProfileKey = "AD2KitMutator.calibration.v2"
+    // The app was renamed from AD2 Kit Architect. Its old preferences domain
+    // is checked once on launch so the new app name never strands a user's
+    // hard-won click captures.
+    private let previousBundleIdentifier = "com.ad2kitarchitect.local"
+    private let clickIntervalKey = "AD2KitMutator.clickIntervalMilliseconds.v1"
+    // Inclusion is deliberately separate from calibration. Updating the app
+    // never rewrites any saved row/arrow coordinates the user already made.
+    private let enabledPiecesKey = "AD2KitMutator.enabledPieces.v1"
+    private let logicFallbackKey = "AD2KitMutator.useLogicCalibrationForStandalone.v1"
+    private var captureMonitor: Any?
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: profileKey), let loaded = try? JSONDecoder().decode(CalibrationProfile.self, from: data) {
+        let previousDefaults = UserDefaults(suiteName: previousBundleIdentifier)
+        let savedInterval = UserDefaults.standard.object(forKey: clickIntervalKey) as? Double
+            ?? previousDefaults?.object(forKey: clickIntervalKey) as? Double
+        clickIntervalMilliseconds = min(max(savedInterval ?? 30, 30), 600)
+        let savedLogicFallback = UserDefaults.standard.object(forKey: logicFallbackKey) as? Bool
+            ?? previousDefaults?.object(forKey: logicFallbackKey) as? Bool
+        useLogicCalibrationForStandalone = savedLogicFallback ?? true
+        let hasCurrentProfile = UserDefaults.standard.data(forKey: profileKey) != nil
+        if let data = UserDefaults.standard.data(forKey: profileKey) ?? previousDefaults?.data(forKey: profileKey),
+           let loaded = try? JSONDecoder().decode(CalibrationProfile.self, from: data) {
             profile = loaded
+            if !hasCurrentProfile { storeProfile() }
+        } else if let data = UserDefaults.standard.data(forKey: previousProfileKey) ?? previousDefaults?.data(forKey: previousProfileKey),
+                  let previous = try? JSONDecoder().decode(CalibrationProfile.self, from: data) {
+            automationTarget = .standalone
+            let frame = currentTargetWindowFrame()
+            profile.points = Dictionary(uniqueKeysWithValues: previous.points.map { key, point in
+                (storageKey(key), CalibratedPoint(screen: point.screen, ad2WindowOffset: point.ad2WindowOffset, ad2WindowSize: point.ad2WindowSize ?? frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) }, ad2WindowTitle: nil))
+            }
+            )
+            storeProfile()
+        } else if let data = UserDefaults.standard.data(forKey: legacyProfileKey) ?? previousDefaults?.data(forKey: legacyProfileKey),
+                  let legacy = try? JSONDecoder().decode(LegacyCalibrationProfile.self, from: data) {
+            automationTarget = .standalone
+            let frame = currentTargetWindowFrame()
+            profile.points = Dictionary(uniqueKeysWithValues: legacy.points.map { key, point in
+                (storageKey(key), CalibratedPoint(
+                    screen: point,
+                    ad2WindowOffset: frame.map { ScreenPoint(CGPoint(x: point.x - $0.origin.x, y: point.y - $0.origin.y)) },
+                    ad2WindowSize: frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) },
+                    ad2WindowTitle: nil
+                ))
+            })
+            storeProfile()
         }
-        presetName = nextPresetName()
+        loadEnabledPieces()
         refreshPermission()
     }
 
-    var capturedTargets: [KitMutationTarget] { KitMutationTarget.allCases.filter { isCaptured($0) } }
-    var readyToMutate: Bool { accessibilityGranted && !isRunning && capturedTargets.count >= 2 }
-    var readyToSave: Bool { accessibilityGranted && !isRunning && SaveTarget.allCases.allSatisfy { isCaptured($0) } && !presetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var capturedTargets: [KitMutationTarget] {
+        KitPiece.allCases.flatMap { piece in
+            KitArrow.allCases.map { KitMutationTarget(piece: piece, arrow: $0) }
+        }.filter(isCaptured)
+    }
+    var capturedPieces: [KitPiece] {
+        KitPiece.allCases.filter { isHoverCaptured($0) && !capturedArrows(for: $0).isEmpty }
+    }
+    var enabledPreparedPieces: [KitPiece] { capturedPieces.filter(isPieceEnabled) }
+    var readyToMutate: Bool { accessibilityGranted && !isBusy && !enabledPreparedPieces.isEmpty }
+    var isBusy: Bool { isRunning || isCapturing }
+    var clickIntervalLabel: String { "\(Int(clickIntervalMilliseconds.rounded())) ms" }
 
     func refreshPermission() {
         accessibilityGranted = AXIsProcessTrusted()
@@ -100,114 +253,336 @@ final class AD2KitMutator: ObservableObject {
         status = .working("Approve this app in macOS Accessibility settings, then return here and click Check again.")
     }
 
-    func isCaptured(_ target: KitMutationTarget) -> Bool { profile.points[target.rawValue] != nil }
-    func isCaptured(_ target: SaveTarget) -> Bool { profile.points[target.rawValue] != nil }
+    func readPointerLocation() {
+        refreshPermission()
+        guard accessibilityGranted else {
+            status = .failure("This build does not have Accessibility permission yet. Use Request access, enable Addictive Mutator, then click Check again.")
+            return
+        }
+        guard let point = CGEvent(source: nil)?.location else {
+            status = .failure("macOS did not return the current pointer location.")
+            return
+        }
+        status = .success("Pointer read successfully: x \(Int(point.x.rounded())) · y \(Int(point.y.rounded())).")
+    }
+
+    func isCaptured(_ target: KitMutationTarget) -> Bool { calibratedPoint(for: target.id) != nil }
+
+    func isHoverCaptured(_ piece: KitPiece) -> Bool { calibratedPoint(for: hoverKey(for: piece)) != nil }
+
+    func capturedArrows(for piece: KitPiece) -> [KitArrow] {
+        KitArrow.allCases.filter { isCaptured(KitMutationTarget(piece: piece, arrow: $0)) }
+    }
+
+    func isPieceReady(_ piece: KitPiece) -> Bool {
+        isHoverCaptured(piece) && !capturedArrows(for: piece).isEmpty
+    }
+
+    func isPieceEnabled(_ piece: KitPiece) -> Bool {
+        enabledPieces.contains(piece)
+    }
+
+    func setPieceEnabled(_ piece: KitPiece, enabled: Bool) {
+        if enabled { enabledPieces.insert(piece) }
+        else { enabledPieces.remove(piece) }
+        storeEnabledPieces()
+    }
+
+    func capturedLocation(_ target: KitMutationTarget) -> String? {
+        guard let point = calibratedPoint(for: target.id)?.screen else { return nil }
+        return "x \(Int(point.x.rounded())) · y \(Int(point.y.rounded()))"
+    }
 
     func clear(_ target: KitMutationTarget) {
-        profile.points.removeValue(forKey: target.rawValue)
+        profile.points.removeValue(forKey: storageKey(target.id))
+        storeProfile()
+    }
+
+    func clearHover(for piece: KitPiece) {
+        profile.points.removeValue(forKey: storageKey(hoverKey(for: piece)))
         storeProfile()
     }
 
     func clearAll() {
-        profile.points.removeAll()
+        profile.points.keys.filter { $0.hasPrefix("\(automationTarget.rawValue).") }.forEach { profile.points.removeValue(forKey: $0) }
         storeProfile()
     }
 
-    func capture(_ target: KitMutationTarget) { beginCapture(key: target.rawValue, label: target.name) }
-    func capture(_ target: SaveTarget) { beginCapture(key: target.rawValue, label: target.name) }
+    func capture(_ target: KitMutationTarget) { beginCapture(key: target.id, label: target.name) }
+    func captureHover(for piece: KitPiece) { beginCapture(key: hoverKey(for: piece), label: "\(piece.name) row") }
+
+    /// A safe diagnostic: move the visible cursor to one stored Kit-page
+    /// coordinate, pause, then issue one click. This makes a bad calibration
+    /// immediately obvious before a multi-slot mutation is attempted.
+    func test(_ target: KitMutationTarget) async {
+        guard await bringTargetForward() else { return }
+        guard let hover = hoverPoint(for: target.piece), let point = point(for: target) else {
+            status = .failure("Capture the ‘\(target.piece.name)’ row and its ‘\(target.arrow.name)’ arrow for \(automationTarget.name) before testing.")
+            return
+        }
+        isRunning = true
+        defer { isRunning = false }
+
+        status = .working("Hovering ‘\(target.piece.name)’, then moving to its ‘\(target.arrow.name)’ arrow…")
+        sendHover(at: hover)
+        try? await Task.sleep(nanoseconds: hoverRevealDelay)
+        sendHover(at: point)
+        try? await Task.sleep(nanoseconds: arrowRevealDelay)
+        click(point)
+        try? await Task.sleep(nanoseconds: automationDelay)
+        status = .success("Clicked ‘\(target.name)’ once. If the piece did not cycle, recapture the row hover point and arrow, then test again.")
+    }
 
     func mutateKit() async {
         guard readyToMutate else {
-            status = .failure("Enable Accessibility and capture at least two Kit-page next arrows first.")
+            status = .failure("Enable Accessibility, then turn on and prepare at least one Kit piece (row hover plus an Up or Down arrow).")
             return
         }
-        let targets = Array(capturedTargets.shuffled().prefix(min(mutationDepth, capturedTargets.count)))
+        // The user chooses the pieces with the per-slot Include switches;
+        // execution always follows the physical Kit-page route.
+        let pieces = enabledPreparedPieces.sorted { $0.kitPageOrder < $1.kitPageOrder }
+        await mutate(pieces: pieces)
+    }
+
+    private func mutate(pieces: [KitPiece]) async {
         let seed = Int.random(in: 1000...9999)
         var generator = SeededGenerator(seed: UInt64(seed))
-        let recipe = MutationRecipe(seed: seed, changes: targets.map { ($0, Int(generator.next() % 6) + 1) })
+        let changes = pieces.compactMap { piece -> (KitMutationTarget, Int)? in
+            let arrows = capturedArrows(for: piece)
+            guard !arrows.isEmpty else { return nil }
+            let arrow = arrows[Int(generator.next() % UInt64(arrows.count))]
+            return (KitMutationTarget(piece: piece, arrow: arrow), Int(generator.next() % 4) + 1)
+        }
+        let recipe = MutationRecipe(seed: seed, changes: changes)
         await run(recipe: recipe)
     }
 
-    func saveCurrentKit() async {
-        guard readyToSave else {
-            status = .failure("Capture the three AD2 Save Preset controls and give the preset a name first.")
+    /// The menu-bar action is deliberately only for an already-calibrated AD2
+    /// editor in Logic. It never reuses the standalone capture points.
+    func quickRandomizeLogic() async {
+        guard !isBusy else {
+            status = .failure("A capture or mutation is already in progress.")
             return
         }
-        guard await bringAD2Forward() else { return }
-        isRunning = true
-        defer { isRunning = false }
-        status = .working("Opening AD2’s Save Preset dialog…")
-        click(point(for: .savePreset))
-        try? await Task.sleep(nanoseconds: 650_000_000)
-        status = .working("Naming the AD2 User Preset…")
-        click(point(for: .presetName))
-        try? await Task.sleep(nanoseconds: 120_000_000)
-        selectAllAndType(cleanedPresetName)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        status = .working("Asking AD2 to save the generated kit…")
-        click(point(for: .confirmSave))
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        status = .success("AD2 saved ‘\(cleanedPresetName)’ as its own User Preset.")
-        presetName = nextPresetName()
-    }
-
-    private var cleanedPresetName: String {
-        presetName.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
+        let previousTarget = automationTarget
+        automationTarget = .logicPro
+        defer { automationTarget = previousTarget }
+        guard !enabledPreparedPieces.isEmpty else {
+            status = .failure("The menu-bar action needs at least one enabled, calibrated AD2 piece for Logic Pro. Open the main app to set its Include switch and calibrate it once.")
+            return
+        }
+        await mutateKit()
     }
 
     private func run(recipe: MutationRecipe) async {
-        guard await bringAD2Forward() else { return }
+        guard await bringTargetForward() else { return }
         isRunning = true
         defer { isRunning = false }
         status = .working("Mutating \(recipe.changes.count) Kit-page slots in Addictive Drums 2…")
         for (target, clicks) in recipe.changes {
-            guard let point = point(for: target) else { continue }
-            for _ in 0..<clicks {
+            guard let hover = hoverPoint(for: target.piece), let point = point(for: target) else { continue }
+            // Hover once to reveal the arrow, then remain on it for the full
+            // burst. There is no need to travel back to the drum row between
+            // clicks, which makes a multi-step change much faster.
+            sendHover(at: hover)
+            try? await Task.sleep(nanoseconds: hoverRevealDelay)
+            sendHover(at: point)
+            try? await Task.sleep(nanoseconds: arrowRevealDelay)
+            for clickIndex in 0..<clicks {
+                status = .working("Changing ‘\(target.name)’ — click \(clickIndex + 1) of \(clicks)…")
                 click(point)
                 try? await Task.sleep(nanoseconds: automationDelay)
             }
         }
         lastRecipe = recipe
-        presetName = "AD2 Hybrid \(recipe.seed)"
-        status = .success("New AD2 kit generated. Audition it, then use the Save step below to create the real User Preset.")
+        status = .success("New AD2 kit generated. Audition it, then save it through AD2 whenever you want to keep it.")
     }
 
-    private func bringAD2Forward() async -> Bool {
+    private func bringTargetForward() async -> Bool {
         guard accessibilityGranted else {
             status = .failure("Accessibility permission is required before any automation can run.")
             return false
         }
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == ad2BundleIdentifier }) else {
-            status = .failure("Open standalone Addictive Drums 2, switch to the Kit page, then try again.")
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == automationTarget.bundleIdentifier }) else {
+            status = .failure(automationTarget == .standalone ? "Open standalone Addictive Drums 2, switch to the Kit page, then try again." : "Open the target Addictive Drums 2 plug-in editor in Logic Pro, then try again.")
             return false
         }
         app.activate(options: [])
         try? await Task.sleep(nanoseconds: 700_000_000)
+        guard currentTargetWindowFrame() != nil else {
+            status = .failure(automationTarget == .standalone ? "AD2’s standalone window is not available." : "Focus the desired AD2 plug-in editor window in Logic Pro, then try again.")
+            return false
+        }
         return true
     }
 
     private func beginCapture(key: String, label: String) {
-        guard !isRunning else { return }
-        status = .working("Move the pointer over ‘\(label)’ in AD2. Capturing its location in 4 seconds…")
+        guard !isBusy else { return }
+        refreshPermission()
+        guard accessibilityGranted else {
+            status = .failure("Allow Accessibility for this build first. Capture needs the same permission as mouse control.")
+            return
+        }
+        isCapturing = true
+        status = .working("Preparing click capture for ‘\(label)’… wait for the second chime, then click the exact AD2 control once.")
+        NSSound.beep()
         NSApp.hide(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self else { return }
-            guard let location = CGEvent(source: nil)?.location else {
-                self.status = .failure("macOS could not read the pointer location. Enable Accessibility and try again.")
-                NSApp.activate(ignoringOtherApps: true)
-                return
+        // Do not monitor immediately: without this delay the initial click on
+        // this app's Capture button can be mistaken for the AD2 control click.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
+            guard let self, self.isCapturing else { return }
+            self.captureMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+                let location = CGEvent(source: nil)?.location
+                DispatchQueue.main.async {
+                    self?.finishCapture(key: key, label: label, location: location)
+                }
             }
-            self.profile.points[key] = ScreenPoint(location)
-            self.storeProfile()
-            self.status = .success("Captured ‘\(label)’. Keep AD2 at this UI scale for automation.")
+            NSSound.beep()
+            self.status = .working("Click capture is ready for ‘\(label)’. Click the exact AD2 control once now.")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self else { return }
+            guard self.isCapturing else { return }
+            self.stopCaptureMonitor()
+            self.isCapturing = false
+            self.status = .failure("No click was captured for ‘\(label)’ within 30 seconds. Try Capture again and click the AD2 control once.")
             NSApp.activate(ignoringOtherApps: true)
         }
     }
 
-    private func point(for target: KitMutationTarget) -> CGPoint? { profile.points[target.rawValue]?.cgPoint }
-    private func point(for target: SaveTarget) -> CGPoint? { profile.points[target.rawValue]?.cgPoint }
+    private func finishCapture(key: String, label: String, location: CGPoint?) {
+        guard isCapturing else { return }
+        stopCaptureMonitor()
+        isCapturing = false
+        guard let location else {
+            status = .failure("macOS could not read that click location. Try Capture again.")
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let windowFrame = currentTargetWindowFrame(containing: location)
+        profile.points[storageKey(key)] = CalibratedPoint(
+            screen: ScreenPoint(location),
+            ad2WindowOffset: windowFrame.map { ScreenPoint(CGPoint(x: location.x - $0.origin.x, y: location.y - $0.origin.y)) },
+            ad2WindowSize: windowFrame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) },
+            ad2WindowTitle: windowFrame?.title
+        )
+        storeProfile()
+        lastCaptureDetail = "Saved ‘\(label)’ at x \(Int(location.x.rounded())) · y \(Int(location.y.rounded()))."
+        NSSound.beep()
+        status = .success("\(lastCaptureDetail ?? "Capture saved.") It will survive restarts and follow the \(automationTarget.name) window position/size.")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func stopCaptureMonitor() {
+        if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }
+        captureMonitor = nil
+    }
+
+    private func point(for target: KitMutationTarget) -> CGPoint? { resolvedPoint(calibratedPoint(for: target.id)) }
+    private func hoverPoint(for piece: KitPiece) -> CGPoint? { resolvedPoint(calibratedPoint(for: hoverKey(for: piece))) }
+    private func hoverKey(for piece: KitPiece) -> String { "\(piece.rawValue).hover" }
+    private func storageKey(_ key: String) -> String { "\(automationTarget.rawValue).\(key)" }
+    private func calibratedPoint(for key: String) -> CalibratedPoint? {
+        if let directPoint = profile.points[storageKey(key)] { return directPoint }
+        guard automationTarget == .standalone, useLogicCalibrationForStandalone else { return nil }
+        return profile.points["\(AutomationTarget.logicPro.rawValue).\(key)"]
+    }
+
+    private var hoverRevealDelay: UInt64 {
+        let multiplier = pointerMode == .quiet ? 0.6 : 1.5
+        let minimum = pointerMode == .quiet ? 30.0 : 85.0
+        let maximum = pointerMode == .quiet ? 110.0 : 300.0
+        return millisecondsToNanoseconds(min(max(clickIntervalMilliseconds * multiplier, minimum), maximum))
+    }
+    private var arrowRevealDelay: UInt64 {
+        let multiplier = pointerMode == .quiet ? 0.9 : 2.0
+        let minimum = pointerMode == .quiet ? 45.0 : 120.0
+        let maximum = pointerMode == .quiet ? 160.0 : 450.0
+        return millisecondsToNanoseconds(min(max(clickIntervalMilliseconds * multiplier, minimum), maximum))
+    }
+    private var automationDelay: UInt64 { millisecondsToNanoseconds(clickIntervalMilliseconds) }
+
+    private func millisecondsToNanoseconds(_ value: Double) -> UInt64 {
+        UInt64(max(1, value * 1_000_000))
+    }
+
+    private func resolvedPoint(_ stored: CalibratedPoint?) -> CGPoint? {
+        guard let stored else { return nil }
+        guard let offset = stored.ad2WindowOffset,
+              let frame = currentTargetWindowFrame(preferredTitle: stored.ad2WindowTitle) else { return stored.screen.cgPoint }
+        let xScale = stored.ad2WindowSize.flatMap { $0.x > 0 && frame.size.width > 0 ? frame.size.width / $0.x : nil } ?? 1
+        let yScale = stored.ad2WindowSize.flatMap { $0.y > 0 && frame.size.height > 0 ? frame.size.height / $0.y : nil } ?? 1
+        return CGPoint(x: frame.origin.x + (offset.x * xScale), y: frame.origin.y + (offset.y * yScale))
+    }
+
+    private func currentTargetWindowFrame(containing point: CGPoint? = nil, preferredTitle: String? = nil) -> AD2WindowFrame? {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == automationTarget.bundleIdentifier }) else { return nil }
+        let applicationElement = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(applicationElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement],
+              !windows.isEmpty else { return nil }
+        let frames = windows.compactMap(windowFrame)
+        if let point {
+            let containing = frames.filter { CGRect(origin: $0.origin, size: $0.size).contains(point) }
+            if automationTarget == .logicPro, let editor = containing.first(where: isLikelyAD2Editor) {
+                return editor
+            }
+            if let matched = containing.first { return matched }
+        }
+        if automationTarget == .logicPro {
+            if let preferredTitle, let titleMatch = frames.first(where: { titlesMatch($0.title, preferredTitle) }) {
+                return titleMatch
+            }
+            if let editor = frames.first(where: isLikelyAD2Editor) {
+                return editor
+            }
+            var focusedValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(applicationElement, kAXFocusedWindowAttribute as CFString, &focusedValue) == .success,
+               let focusedValue {
+                return windowFrame(focusedValue as! AXUIElement)
+            }
+        }
+        return frames.first
+    }
+
+    private func windowFrame(_ window: AXUIElement) -> AD2WindowFrame? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue, let sizeValue else { return nil }
+        let positionAXValue = positionValue as! AXValue
+        let sizeAXValue = sizeValue as! AXValue
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetType(positionAXValue) == .cgPoint,
+              AXValueGetValue(positionAXValue, .cgPoint, &position),
+              AXValueGetType(sizeAXValue) == .cgSize,
+              AXValueGetValue(sizeAXValue, .cgSize, &size) else { return nil }
+        var titleValue: CFTypeRef?
+        let title: String?
+        if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleValue) == .success {
+            title = titleValue as? String
+        } else {
+            title = nil
+        }
+        return AD2WindowFrame(origin: position, size: size, title: title)
+    }
+
+    private func isLikelyAD2Editor(_ frame: AD2WindowFrame) -> Bool {
+        let title = frame.title?.lowercased() ?? ""
+        return title.contains("adrummer") || title.contains("addictive drums")
+    }
+
+    private func titlesMatch(_ candidate: String?, _ recorded: String) -> Bool {
+        let candidate = candidate?.lowercased() ?? ""
+        let recorded = recorded.lowercased()
+        guard !candidate.isEmpty, !recorded.isEmpty else { return false }
+        if candidate == recorded || candidate.contains(recorded) || recorded.contains(candidate) { return true }
+        guard let stablePrefix = recorded.split(separator: ":", maxSplits: 1).first, stablePrefix.count >= 4 else { return false }
+        return candidate.contains(stablePrefix)
+    }
 
     private func click(_ point: CGPoint?) {
         guard let point else { return }
@@ -218,30 +593,38 @@ final class AD2KitMutator: ObservableObject {
         up?.post(tap: .cghidEventTap)
     }
 
-    private func selectAllAndType(_ text: String) {
+    private func sendHover(at point: CGPoint) {
+        if pointerMode == .visible {
+            CGWarpMouseCursorPosition(point)
+            return
+        }
         let source = CGEventSource(stateID: .hidSystemState)
-        let selectDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-        selectDown?.flags = .maskCommand
-        let selectUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-        selectUp?.flags = .maskCommand
-        selectDown?.post(tap: .cghidEventTap)
-        selectUp?.post(tap: .cghidEventTap)
-        let utf16 = Array(text.utf16)
-        let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-        down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-        up?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
+        move?.post(tap: .cgSessionEventTap)
     }
 
     private func storeProfile() {
         if let data = try? JSONEncoder().encode(profile) { UserDefaults.standard.set(data, forKey: profileKey) }
     }
 
-    private func nextPresetName() -> String {
-        "AD2 Hybrid \(Int.random(in: 1000...9999))"
+    private func loadEnabledPieces() {
+        let allPieces = Set(KitPiece.allCases)
+        guard let settings = UserDefaults.standard.dictionary(forKey: enabledPiecesKey) as? [String: [String]],
+              let savedIDs = settings[automationTarget.rawValue] else {
+            enabledPieces = allPieces
+            return
+        }
+        // Ignore retired/unknown names and use all-on for an old empty entry.
+        let savedPieces = Set(savedIDs.compactMap(KitPiece.init(rawValue:)))
+        enabledPieces = savedPieces.isEmpty ? allPieces : savedPieces
     }
+
+    private func storeEnabledPieces() {
+        var settings = UserDefaults.standard.dictionary(forKey: enabledPiecesKey) as? [String: [String]] ?? [:]
+        settings[automationTarget.rawValue] = enabledPieces.map(\.rawValue).sorted()
+        UserDefaults.standard.set(settings, forKey: enabledPiecesKey)
+    }
+
 }
 
 private struct SeededGenerator {

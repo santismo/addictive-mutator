@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct KitMutatorView: View {
-    @StateObject private var mutator = AD2KitMutator()
+    @ObservedObject var mutator: AD2KitMutator
 
     var body: some View {
         ZStack {
@@ -12,12 +12,11 @@ struct KitMutatorView: View {
                     permissionCard
                     calibrationCard
                     generateCard
-                    saveCard
                     statusCard
                     footer
                 }
                 .padding(30)
-                .frame(maxWidth: 920, alignment: .leading)
+                .frame(maxWidth: 1_300, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
         }
@@ -27,18 +26,24 @@ struct KitMutatorView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 16) {
-            Image(systemName: "drum.fill")
-                .font(.system(size: 31, weight: .medium))
-                .foregroundStyle(Color.coral)
-                .padding(.top, 3)
+            VStack(spacing: 5) {
+                Image(systemName: "drum.fill")
+                    .font(.system(size: 27, weight: .medium))
+                Text("AdMu").font(.caption2.bold())
+            }
+            .foregroundStyle(Color.orangeAccent)
+            .frame(width: 52)
             VStack(alignment: .leading, spacing: 6) {
-                Text("AD2 KIT MUTATOR")
+                Text("ADDICTIVE MUTATOR")
                     .sectionLabel()
-                Text("Generate actual mixed AD2 kits.")
-                    .font(.system(size: 34, weight: .regular, design: .serif))
-                Text("This beta drives the visible AD2 Kit page, so Addictive Drums itself creates and saves the real preset.")
+                Text("Mutate the kit. Keep the groove.")
+                    .font(.system(size: 31, weight: .medium, design: .rounded))
+                Text("Calibrate the visible Addictive Drums Kit page once, then generate new combinations on demand.")
                     .foregroundStyle(.secondary)
                     .font(.callout)
+                Text("AD2 KIT PAGE MAP · 18 SLOTS")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(Color.orangeAccent)
             }
         }
     }
@@ -52,7 +57,7 @@ struct KitMutatorView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(mutator.accessibilityGranted ? "Accessibility enabled" : "Allow mouse-and-keyboard control")
                         .font(.headline)
-                    Text(mutator.accessibilityGranted ? "The mutator can now operate only when you start a run." : "macOS needs permission before this app can click AD2. Approve AD2 Preset Studio in System Settings → Privacy & Security → Accessibility.")
+                    Text(mutator.accessibilityGranted ? "The mutator can now operate only when you start a run." : "macOS needs permission before this app can click AD2. Approve Addictive Mutator in System Settings → Privacy & Security → Accessibility.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -63,8 +68,13 @@ struct KitMutatorView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(Color.coral)
                 } else {
-                    Button("Check again") { mutator.refreshPermission() }
-                        .buttonStyle(.bordered)
+                    VStack(alignment: .trailing, spacing: 5) {
+                        Button("Check again") { mutator.refreshPermission() }
+                            .buttonStyle(.bordered)
+                        Button("Read pointer") { mutator.readPointerLocation() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
                 }
             }
             .padding(5)
@@ -75,31 +85,29 @@ struct KitMutatorView: View {
     private var calibrationCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 15) {
-                sectionHeading(number: "01", title: "Calibrate your Kit page", subtitle: "Open standalone Addictive Drums 2, go to Kit, and leave the UI scale unchanged. For each sound you want the generator to vary, click Capture, then move your pointer over that slot’s right-facing next arrow. The app captures its location after four seconds—no click is sent during calibration.")
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 9)], spacing: 9) {
-                    ForEach(KitMutationTarget.allCases) { target in
-                        HStack(spacing: 8) {
-                            Image(systemName: mutator.isCaptured(target) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(mutator.isCaptured(target) ? .green : .secondary)
-                            Text(target.name).font(.caption)
-                            Spacer(minLength: 0)
-                            Button(mutator.isCaptured(target) ? "Recapture" : "Capture") {
-                                mutator.capture(target)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            Button(role: .destructive) { mutator.clear(target) } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.borderless)
-                                .controlSize(.mini)
-                                .disabled(!mutator.isCaptured(target))
-                        }
-                        .padding(8)
-                        .background(.white.opacity(mutator.isCaptured(target) ? 0.055 : 0.025), in: RoundedRectangle(cornerRadius: 6))
+                Picker("Automation target", selection: $mutator.automationTarget) {
+                    ForEach(AutomationTarget.allCases) { target in
+                        Text(target.name).tag(target)
                     }
                 }
+                .pickerStyle(.segmented)
+                .disabled(mutator.isBusy)
+
+                if mutator.automationTarget == .standalone {
+                    Toggle("Use Logic Pro mapping for any unmapped standalone controls", isOn: $mutator.useLogicCalibrationForStandalone)
+                        .toggleStyle(.switch)
+                        .tint(Color.orangeAccent)
+                        .disabled(mutator.isBusy)
+                    Text("Direct standalone captures always win. With this on, your mapped Logic Kit page is scaled to the standalone AD2 window for any remaining controls; test one arrow first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                sectionHeading(number: "01", title: "Click-to-capture the hover arrows", subtitle: mutator.automationTarget == .standalone ? "Click Capture, then click the exact AD2 control once; that click is both captured and passed to AD2. Capture a row point first, then its Up and/or Down arrow. These points persist across restarts and follow AD2’s window position and proportional size changes." : "Open and focus the exact AD2 plug-in editor in Logic Pro first. Then capture its row, Up, and Down controls exactly as you did in standalone. Logic calibration is saved independently and can optionally be used as the standalone fallback.")
+
+                kitSlotGrid
                 HStack {
-                    Text("\(mutator.capturedTargets.count) slot\(mutator.capturedTargets.count == 1 ? "" : "s") ready")
+                    Text("\(mutator.enabledPreparedPieces.count) included & ready · \(mutator.capturedPieces.count) calibrated · \(mutator.capturedTargets.count) arrows captured")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -107,30 +115,63 @@ struct KitMutatorView: View {
                         .buttonStyle(.link)
                         .font(.caption)
                 }
+                if let detail = mutator.lastCaptureDetail {
+                    Text(detail)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.green)
+                }
             }
             .padding(5)
         } label: { EmptyView() }
         .groupBoxStyle(CardGroupBoxStyle())
     }
 
+    private var kitSlotGrid: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            VStack(spacing: 3) {
+                ForEach(Array(KitPiece.kitPageRows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 3) {
+                        ForEach(row) { piece in
+                            PieceCalibrationCard(piece: piece, mutator: mutator)
+                                .frame(width: 182, height: 138)
+                        }
+                    }
+                }
+            }
+            .padding(3)
+        }
+        .frame(minHeight: 420)
+        .background(Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 4))
+    }
+
     private var generateCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 15) {
-                sectionHeading(number: "02", title: "Mutate the actual kit", subtitle: "First load any starting preset in standalone AD2. The generator advances a random selection of your captured kit-piece menus; AD2 decides from its own installed content, so no missing ADpaks are introduced.")
+                sectionHeading(number: "02", title: "Mutate the actual kit", subtitle: mutator.automationTarget == .standalone ? "First load any starting preset in standalone AD2. Every enabled, calibrated Kit piece gets a random captured direction and click count; turn a slot off above to leave it unchanged." : "Keep the intended AD2 editor visible and focused in Logic Pro. Only enabled slots use the points calibrated for that exact Logic window; disabled slots are skipped.")
                 HStack(alignment: .bottom, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("MUTATION DEPTH").sectionLabel()
-                            Spacer()
-                            Text("\(mutator.mutationDepth) slots")
+                        Text("INCLUDED KIT PIECES").sectionLabel()
+                        Text("This run will mutate \(mutator.enabledPreparedPieces.count) enabled, calibrated piece\(mutator.enabledPreparedPieces.count == 1 ? "" : "s").")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Picker("Pointer", selection: $mutator.pointerMode) {
+                            ForEach(PointerMode.allCases) { mode in
+                                Text(mode.name).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 260)
+                        HStack(spacing: 9) {
+                            Text("CLICK INTERVAL").sectionLabel()
+                            Slider(value: $mutator.clickIntervalMilliseconds, in: 30...600, step: 5)
+                            Text(mutator.clickIntervalLabel)
                                 .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
+                                .frame(width: 48, alignment: .trailing)
                         }
-                        Stepper(value: $mutator.mutationDepth, in: 1...max(1, mutator.capturedTargets.count)) {
-                            Text(mutator.mutationDepth == 1 ? "One new kit piece" : "Several changed kit pieces")
-                                .font(.caption)
-                        }
-                        .frame(minWidth: 260)
+                        .frame(maxWidth: 260)
+                        Text("Saved as your default for future runs. Lower can be faster; raise it if AD2 drops a click.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button {
@@ -148,47 +189,6 @@ struct KitMutatorView: View {
                         .foregroundStyle(.secondary)
                         .padding(10)
                         .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
-                }
-            }
-            .padding(5)
-        } label: { EmptyView() }
-        .groupBoxStyle(CardGroupBoxStyle())
-    }
-
-    private var saveCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 15) {
-                sectionHeading(number: "03", title: "Save through Addictive Drums", subtitle: "Optional. Capture AD2’s visible Save control, the name field in its Save Preset dialog, and its final Save button. The mutator clicks those controls and types a unique name; AD2 writes the genuine .AD2Preset file into its own User folder.")
-                HStack(spacing: 10) {
-                    ForEach(SaveTarget.allCases) { target in
-                        HStack(spacing: 7) {
-                            Image(systemName: mutator.isCaptured(target) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(mutator.isCaptured(target) ? .green : .secondary)
-                            Text(target.name).font(.caption)
-                            Button(mutator.isCaptured(target) ? "Recapture" : "Capture") { mutator.capture(target) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                        .padding(8)
-                        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    Spacer()
-                }
-                HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("PRESET NAME").sectionLabel()
-                        TextField("Generated AD2 kit name", text: $mutator.presetName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 330)
-                    }
-                    Button {
-                        Task { await mutator.saveCurrentKit() }
-                    } label: {
-                        runButtonLabel("Save real AD2 preset")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.coral)
-                    .disabled(!mutator.readyToSave)
                 }
             }
             .padding(5)
@@ -233,10 +233,122 @@ struct KitMutatorView: View {
     private var footer: some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: "exclamationmark.shield.fill").foregroundStyle(Color.coral)
-            Text("Automation is coordinate-based and intentionally opt-in. Keep AD2 on the Kit page at the same UI scale used for calibration, keep the pointer away while a run is active, and confirm the resulting kit by ear before saving.")
+            Text("Enabled, calibrated pieces run in the same physical order as the AD2 Kit page: Cym 1–6, Tom 1–4, Ride 1–2, Kick, Snare, Hi-hat, Flexi 1–3. Each arrow gets one burst. Your include switches, click interval, and captures persist; recapture only after a real AD2 layout change.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.top, 2)
+    }
+}
+
+private struct PieceCalibrationCard: View {
+    let piece: KitPiece
+    @ObservedObject var mutator: AD2KitMutator
+
+    var body: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 6) {
+                Text(piece.name.uppercased())
+                    .font(.system(size: 12, weight: .bold))
+                    .tracking(1.5)
+                    .foregroundStyle(.white.opacity(0.88))
+                Spacer(minLength: 0)
+                Image(systemName: mutator.isPieceReady(piece) ? "checkmark.circle.fill" : "circle")
+                    .font(.caption2)
+                    .foregroundStyle(mutator.isPieceReady(piece) ? Color.orangeAccent : .white.opacity(0.35))
+            }
+            .frame(maxWidth: .infinity)
+
+            Toggle("Include \(piece.name)", isOn: Binding(
+                get: { mutator.isPieceEnabled(piece) },
+                set: { mutator.setPieceEnabled(piece, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .tint(Color.orangeAccent)
+            .help(mutator.isPieceEnabled(piece) ? "\(piece.name) will be randomized when it is calibrated" : "\(piece.name) will be skipped")
+            .disabled(mutator.isBusy)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+
+            Spacer(minLength: 3)
+
+            HStack(alignment: .center, spacing: 10) {
+                rowCapture
+                Divider().overlay(Color.line).frame(height: 45)
+                VStack(spacing: 5) {
+                    arrowCapture(.up)
+                    arrowCapture(.down)
+                }
+            }
+
+            Spacer(minLength: 1)
+            Text(pieceStatus)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(.white.opacity(0.48))
+        }
+        .padding(11)
+        .opacity(mutator.isPieceEnabled(piece) ? 1 : 0.48)
+        .background(Color.kitSlot, in: RoundedRectangle(cornerRadius: 3))
+        .overlay { RoundedRectangle(cornerRadius: 3).stroke(Color.line, lineWidth: 1) }
+    }
+
+    private var rowCapture: some View {
+        Button {
+            mutator.captureHover(for: piece)
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: "cursorarrow.rays")
+                    .font(.caption)
+                Text(mutator.isHoverCaptured(piece) ? "ROW ✓" : "ROW")
+                    .font(.system(size: 9, weight: .bold))
+                    .tracking(0.6)
+            }
+            .foregroundStyle(mutator.isHoverCaptured(piece) ? Color.orangeAccent : .white.opacity(0.8))
+            .frame(width: 53, height: 45)
+            .background(.white.opacity(mutator.isHoverCaptured(piece) ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: 3))
+        }
+        .buttonStyle(.plain)
+        .help("Capture the point that reveals \(piece.name)'s arrows")
+        .disabled(mutator.isBusy)
+    }
+
+    private func arrowCapture(_ arrow: KitArrow) -> some View {
+        let target = KitMutationTarget(piece: piece, arrow: arrow)
+        return HStack(spacing: 4) {
+            Button {
+                mutator.capture(target)
+            } label: {
+                Image(systemName: arrow.symbol)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(mutator.isCaptured(target) ? Color.orangeAccent : .white.opacity(0.8))
+                    .frame(width: 24, height: 18)
+                    .background(.white.opacity(mutator.isCaptured(target) ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: 2))
+            }
+            .buttonStyle(.plain)
+            .help("Capture \(piece.name)'s \(arrow.name) arrow")
+            .disabled(mutator.isBusy)
+
+            Button {
+                Task { await mutator.test(target) }
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 20, height: 18)
+                    .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 2))
+            }
+            .buttonStyle(.plain)
+            .help("Test \(piece.name)'s \(arrow.name) arrow")
+            .disabled(!mutator.isHoverCaptured(piece) || !mutator.isCaptured(target) || mutator.isBusy)
+        }
+    }
+
+    private var pieceStatus: String {
+        let row = mutator.isHoverCaptured(piece) ? "ROW" : "—"
+        let up = mutator.isCaptured(KitMutationTarget(piece: piece, arrow: .up)) ? "↑" : "·"
+        let down = mutator.isCaptured(KitMutationTarget(piece: piece, arrow: .down)) ? "↓" : "·"
+        return "\(row)  \(up) \(down)"
     }
 }

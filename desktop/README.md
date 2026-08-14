@@ -1,22 +1,19 @@
-# AD2 Kit Architect for macOS
+# Addictive Mutator for macOS
 
-This is a local SwiftUI Logic preset studio for Addictive Drums 2. It scans only the standard Logic Audio Unit preset folder and provides:
+Addictive Mutator is a local companion app for procedurally randomizing the visible Addictive Drums 2 Kit page. It never reads, changes, or generates AD2 preset files.
 
-- multi-preset mix blending: a base preset plus any number of influence presets; and
-- a random mix-hybrid generator that chooses a fresh base, one to three influence presets, and a new blend strength on every run.
-- an **AD2 Kit Mutator** tab that mutates individually captured Kit-page slots, then optionally saves the result through AD2’s own Save Preset dialog.
+## What it does
 
-Every output is named after its source recipe, such as `modern bap + heavy united — hybrid.aupreset`. If the exact same source combination is generated again, the app adds a numerical suffix rather than overwriting a prior file.
+- Calibrates the Kit page through click-to-capture controls.
+- Matches AD2’s 18-slot layout: Cym 1–6, Tom 1–4, Ride 1–2, Kick, Snare, Hi-hat, and Flexi 1–3.
+- Lets you include or skip every Kit piece independently, then randomizes only the included, prepared pieces in physical Kit-page order to reduce pointer travel.
+- Stores calibrations, inclusion switches, and the chosen click interval locally, so they survive restarts and follow the calibrated window when it moves or resizes. Existing captures from the earlier AD2 Kit Architect name are migrated automatically.
+- Starts in Quiet pointer mode at a 30 ms click interval; both remain adjustable if a particular AD2 setup needs more time.
+- Targets either standalone AD2 or an open, focused AD2 editor inside Logic Pro; their calibrations are kept separate.
+- Can use a mapped Logic Pro Kit page as the non-destructive fallback for unmapped standalone controls. Test one arrow first: the AD2 content is shared, but a host window's outer chrome can vary.
+- Provides an `AdMu` macOS menu-bar action for an already-calibrated Logic AD2 editor.
 
-It does not open, read, alter, or generate `.AD2Preset` contents. XLN does not document a preset file format or export API; creating valid files independently would require reverse engineering, which this project deliberately avoids. Use the generated build sheet in AD2 and save the finished result through AD2’s normal User Preset workflow.
-
-For Logic presets, the app hosts the installed AD2 Audio Unit, loads the selected base and influence `.aupreset` files through the Audio Unit’s standard state API, blends only AD2 parameters made available to hosts, then asks AD2 for its own serialized state before writing a new Logic `.aupreset`. The base preset retains the entire kit selection—including all kit-piece choices—and other non-automatable internal AD2 state. The app never parses or edits the AD2-owned state block. Generated files are written only to `~/Library/Audio/Presets/XLN Audio/Addictive Drums 2/generated presets/`; an existing file is never overwritten.
-
-## AD2 Kit Mutator (beta)
-
-This opt-in workflow creates genuinely new kit-piece combinations in the standalone AD2 app without manipulating any preset file. After granting macOS Accessibility permission, calibrate the right-facing **next** arrow for each Kit-page slot you want included. The mutator will bring standalone AD2 forward and click a randomized subset of those locations. Since AD2 itself cycles the kit-piece browser, it stays within the content installed and licensed by the user.
-
-You can optionally calibrate the three controls in AD2’s Save Preset dialog: the initial Save button, the preset-name field, and the final Save button. The app then types a unique name and lets AD2 write the normal `.AD2Preset` User Preset. Coordinates are local to your display and UI scale, stored only in this app’s local preferences, and never shared. Recalibrate after changing screen layout or AD2 UI scaling.
+The app uses macOS Accessibility permission to drive AD2’s visible interface. AD2 itself selects from the content you already have installed.
 
 ## Run locally
 
@@ -25,9 +22,26 @@ cd desktop
 swift run
 ```
 
-To make a double-clickable local app bundle, run `./scripts/package-macos-app.sh`. It creates `build/AD2 Kit Architect.app` and deliberately refuses to replace an existing bundle.
+To create a double-clickable app bundle with the custom drum icon:
 
-The app looks only in these standard Logic locations:
+```bash
+./scripts/package-macos-app.sh
+```
 
-- sources: `~/Library/Audio/Presets/XLN Audio/Addictive Drums 2/`
-- output: `~/Library/Audio/Presets/XLN Audio/Addictive Drums 2/generated presets/`
+This creates `build/Addictive Mutator.app` without overwriting an existing bundle.
+
+To make a simple drag-to-install macOS disk image (open it and drag the app to Applications):
+
+```bash
+./scripts/create-dmg.sh 'Addictive Mutator.app' 'Addictive Mutator.dmg'
+```
+
+The project is unsigned for now, so macOS may ask you to approve the first launch in Privacy & Security. A Developer ID certificate and Apple notarization are required to remove that warning for public releases.
+
+For the standard macOS Installer wizard, which installs the app into Applications:
+
+```bash
+./scripts/create-installer-pkg.sh 'Addictive Mutator.app' 'Addictive Mutator.pkg'
+```
+
+The source is licensed under the [MIT License](../LICENSE), Copyright © 2026 Santismo.

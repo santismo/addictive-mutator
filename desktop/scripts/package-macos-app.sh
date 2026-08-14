@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="${0:A:h}"
 project_dir="${script_dir:h}"
 output_dir="${project_dir}/build"
-app_name="${1:-AD2 Kit Architect.app}"
+app_name="${1:-Addictive Mutator.app}"
 app_bundle="${output_dir}/${app_name}"
 binary="${project_dir}/.build/release/AD2KitArchitect"
 
@@ -23,4 +23,6 @@ swift build -c release
 mkdir -p "${app_bundle}/Contents/MacOS"
 cp "${binary}" "${app_bundle}/Contents/MacOS/AD2KitArchitect"
 cp "${project_dir}/Info.plist" "${app_bundle}/Contents/Info.plist"
+mkdir -p "${app_bundle}/Contents/Resources"
+cp "${project_dir}/Assets/AppIcon/AddictiveMutator.icns" "${app_bundle}/Contents/Resources/AddictiveMutator.icns"
 print "Created ${app_bundle}"
