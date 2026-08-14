@@ -1,25 +1,78 @@
+import AppKit
 import SwiftUI
 
 @main
 struct AD2KitArchitectApp: App {
+    @NSApplicationDelegateAdaptor(StatusBarCoordinator.self) private var statusBarCoordinator
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .frame(minWidth: 790, idealWidth: 960, minHeight: 700, idealHeight: 790)
+            ContentView(mutator: statusBarCoordinator.mutator)
+                .frame(minWidth: 820, idealWidth: 1_300, minHeight: 700, idealHeight: 880)
+                .onAppear { statusBarCoordinator.install() }
         }
         .windowResizability(.contentMinSize)
     }
 }
 
-struct ContentView: View {
-    var body: some View {
-        TabView {
-            PresetStudioView()
-                .tabItem { Label("Logic Preset Studio", systemImage: "square.stack.3d.up.fill") }
-            KitMutatorView()
-                .tabItem { Label("AD2 Kit Mutator", systemImage: "drum.fill") }
+@MainActor
+final class StatusBarCoordinator: NSObject, NSApplicationDelegate {
+    let mutator = AD2KitMutator()
+    private var statusItem: NSStatusItem?
+
+    override init() {
+        super.init()
+        // SwiftUI can construct its application delegate before its first
+        // scene exists. Queueing this makes AdMu appear even in that path.
+        DispatchQueue.main.async { [weak self] in self?.install() }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        install()
+    }
+
+    func install() {
+        guard statusItem == nil else { return }
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.title = "AdMu"
+        item.button?.image = NSImage(systemSymbolName: "drum.fill", accessibilityDescription: "AdMu Quick Randomize")
+        item.button?.imagePosition = .imageLeading
+        item.button?.image?.isTemplate = true
+        item.button?.toolTip = "AdMu — Addictive Mutator"
+
+        let menu = NSMenu()
+        let randomize = NSMenuItem(title: "Randomize Addictive Drums in Logic", action: #selector(randomizeLogicAD2), keyEquivalent: "")
+        randomize.image = NSImage(systemSymbolName: "shuffle", accessibilityDescription: nil)
+        randomize.target = self
+        menu.addItem(randomize)
+        menu.addItem(.separator())
+        let hint = NSMenuItem(title: "Uses saved Logic calibration + click speed", action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(hint)
+        menu.addItem(NSMenuItem(title: "Open Addictive Mutator", action: #selector(openMainWindow), keyEquivalent: ""))
+        menu.items.last?.target = self
+
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func randomizeLogicAD2() {
+        Task {
+            await mutator.quickRandomizeLogic()
         }
-        .tint(Color.coral)
+    }
+
+    @objc private func openMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct ContentView: View {
+    @ObservedObject var mutator: AD2KitMutator
+
+    var body: some View {
+        KitMutatorView(mutator: mutator)
     }
 }
 
