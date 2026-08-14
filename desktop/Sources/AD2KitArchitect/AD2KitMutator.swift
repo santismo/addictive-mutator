@@ -109,6 +109,10 @@ private struct CalibratedPoint: Codable, Equatable {
     /// The window dimensions at capture time. When AD2 is resized, the offset
     /// is scaled proportionally before the click is sent.
     let ad2WindowSize: ScreenPoint?
+    /// Logic can have several simultaneous windows. Retaining the editor
+    /// title lets resolution choose the AD2 editor instead of the Arrange
+    /// window when a zoom/layout change alters focus.
+    let ad2WindowTitle: String?
 }
 
 private struct CalibrationProfile: Codable {
@@ -122,6 +126,7 @@ private struct LegacyCalibrationProfile: Codable {
 private struct AD2WindowFrame {
     let origin: CGPoint
     let size: CGSize
+    let title: String?
 }
 
 struct MutationRecipe {
@@ -144,7 +149,7 @@ final class AD2KitMutator: ObservableObject {
 
     @Published private(set) var accessibilityGranted = false
     private var profile = CalibrationProfile()
-    @Published var pointerMode: PointerMode = .visible
+    @Published var pointerMode: PointerMode = .quiet
     @Published var clickIntervalMilliseconds: Double {
         didSet {
             UserDefaults.standard.set(clickIntervalMilliseconds, forKey: clickIntervalKey)
@@ -153,6 +158,11 @@ final class AD2KitMutator: ObservableObject {
     @Published var automationTarget: AutomationTarget = .standalone {
         didSet { loadEnabledPieces() }
     }
+    /// Direct standalone points always win. This lets a matching Logic Kit
+    /// layout supply only the standalone controls that have not been mapped.
+    @Published var useLogicCalibrationForStandalone = true {
+        didSet { UserDefaults.standard.set(useLogicCalibrationForStandalone, forKey: logicFallbackKey) }
+    }
     @Published private(set) var enabledPieces: Set<KitPiece> = Set(KitPiece.allCases)
     @Published private(set) var isRunning = false
     @Published private(set) var isCapturing = false
@@ -160,8 +170,8 @@ final class AD2KitMutator: ObservableObject {
     @Published private(set) var lastRecipe: MutationRecipe?
     @Published private(set) var lastCaptureDetail: String?
 
-    // v5 keeps standalone and Logic calibrations separately, preventing a
-    // coordinate captured in one host from ever being used in the other.
+    // v5 keeps standalone and Logic calibrations separately. The user can
+    // explicitly opt into a Logic point as a standalone fallback.
     // Earlier formats store a relative point and its calibration window size.
     // point-only formats are migrated, so a normal update does not make the
     // user recapture every control.
@@ -176,13 +186,17 @@ final class AD2KitMutator: ObservableObject {
     // Inclusion is deliberately separate from calibration. Updating the app
     // never rewrites any saved row/arrow coordinates the user already made.
     private let enabledPiecesKey = "AD2KitMutator.enabledPieces.v1"
+    private let logicFallbackKey = "AD2KitMutator.useLogicCalibrationForStandalone.v1"
     private var captureMonitor: Any?
 
     init() {
         let previousDefaults = UserDefaults(suiteName: previousBundleIdentifier)
         let savedInterval = UserDefaults.standard.object(forKey: clickIntervalKey) as? Double
             ?? previousDefaults?.object(forKey: clickIntervalKey) as? Double
-        clickIntervalMilliseconds = min(max(savedInterval ?? 100, 30), 600)
+        clickIntervalMilliseconds = min(max(savedInterval ?? 30, 30), 600)
+        let savedLogicFallback = UserDefaults.standard.object(forKey: logicFallbackKey) as? Bool
+            ?? previousDefaults?.object(forKey: logicFallbackKey) as? Bool
+        useLogicCalibrationForStandalone = savedLogicFallback ?? true
         let hasCurrentProfile = UserDefaults.standard.data(forKey: profileKey) != nil
         if let data = UserDefaults.standard.data(forKey: profileKey) ?? previousDefaults?.data(forKey: profileKey),
            let loaded = try? JSONDecoder().decode(CalibrationProfile.self, from: data) {
@@ -193,7 +207,7 @@ final class AD2KitMutator: ObservableObject {
             automationTarget = .standalone
             let frame = currentTargetWindowFrame()
             profile.points = Dictionary(uniqueKeysWithValues: previous.points.map { key, point in
-                (storageKey(key), CalibratedPoint(screen: point.screen, ad2WindowOffset: point.ad2WindowOffset, ad2WindowSize: point.ad2WindowSize ?? frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) }))
+                (storageKey(key), CalibratedPoint(screen: point.screen, ad2WindowOffset: point.ad2WindowOffset, ad2WindowSize: point.ad2WindowSize ?? frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) }, ad2WindowTitle: nil))
             }
             )
             storeProfile()
@@ -205,7 +219,8 @@ final class AD2KitMutator: ObservableObject {
                 (storageKey(key), CalibratedPoint(
                     screen: point,
                     ad2WindowOffset: frame.map { ScreenPoint(CGPoint(x: point.x - $0.origin.x, y: point.y - $0.origin.y)) },
-                    ad2WindowSize: frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) }
+                    ad2WindowSize: frame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) },
+                    ad2WindowTitle: nil
                 ))
             })
             storeProfile()
@@ -251,9 +266,9 @@ final class AD2KitMutator: ObservableObject {
         status = .success("Pointer read successfully: x \(Int(point.x.rounded())) · y \(Int(point.y.rounded())).")
     }
 
-    func isCaptured(_ target: KitMutationTarget) -> Bool { profile.points[storageKey(target.id)] != nil }
+    func isCaptured(_ target: KitMutationTarget) -> Bool { calibratedPoint(for: target.id) != nil }
 
-    func isHoverCaptured(_ piece: KitPiece) -> Bool { profile.points[storageKey(hoverKey(for: piece))] != nil }
+    func isHoverCaptured(_ piece: KitPiece) -> Bool { calibratedPoint(for: hoverKey(for: piece)) != nil }
 
     func capturedArrows(for piece: KitPiece) -> [KitArrow] {
         KitArrow.allCases.filter { isCaptured(KitMutationTarget(piece: piece, arrow: $0)) }
@@ -274,7 +289,7 @@ final class AD2KitMutator: ObservableObject {
     }
 
     func capturedLocation(_ target: KitMutationTarget) -> String? {
-        guard let point = profile.points[storageKey(target.id)]?.screen else { return nil }
+        guard let point = calibratedPoint(for: target.id)?.screen else { return nil }
         return "x \(Int(point.x.rounded())) · y \(Int(point.y.rounded()))"
     }
 
@@ -448,7 +463,8 @@ final class AD2KitMutator: ObservableObject {
         profile.points[storageKey(key)] = CalibratedPoint(
             screen: ScreenPoint(location),
             ad2WindowOffset: windowFrame.map { ScreenPoint(CGPoint(x: location.x - $0.origin.x, y: location.y - $0.origin.y)) },
-            ad2WindowSize: windowFrame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) }
+            ad2WindowSize: windowFrame.map { ScreenPoint(CGPoint(x: $0.size.width, y: $0.size.height)) },
+            ad2WindowTitle: windowFrame?.title
         )
         storeProfile()
         lastCaptureDetail = "Saved ‘\(label)’ at x \(Int(location.x.rounded())) · y \(Int(location.y.rounded()))."
@@ -462,10 +478,15 @@ final class AD2KitMutator: ObservableObject {
         captureMonitor = nil
     }
 
-    private func point(for target: KitMutationTarget) -> CGPoint? { resolvedPoint(profile.points[storageKey(target.id)]) }
-    private func hoverPoint(for piece: KitPiece) -> CGPoint? { resolvedPoint(profile.points[storageKey(hoverKey(for: piece))]) }
+    private func point(for target: KitMutationTarget) -> CGPoint? { resolvedPoint(calibratedPoint(for: target.id)) }
+    private func hoverPoint(for piece: KitPiece) -> CGPoint? { resolvedPoint(calibratedPoint(for: hoverKey(for: piece))) }
     private func hoverKey(for piece: KitPiece) -> String { "\(piece.rawValue).hover" }
     private func storageKey(_ key: String) -> String { "\(automationTarget.rawValue).\(key)" }
+    private func calibratedPoint(for key: String) -> CalibratedPoint? {
+        if let directPoint = profile.points[storageKey(key)] { return directPoint }
+        guard automationTarget == .standalone, useLogicCalibrationForStandalone else { return nil }
+        return profile.points["\(AutomationTarget.logicPro.rawValue).\(key)"]
+    }
 
     private var hoverRevealDelay: UInt64 {
         let multiplier = pointerMode == .quiet ? 0.6 : 1.5
@@ -487,32 +508,42 @@ final class AD2KitMutator: ObservableObject {
 
     private func resolvedPoint(_ stored: CalibratedPoint?) -> CGPoint? {
         guard let stored else { return nil }
-        guard let offset = stored.ad2WindowOffset, let frame = currentTargetWindowFrame() else { return stored.screen.cgPoint }
+        guard let offset = stored.ad2WindowOffset,
+              let frame = currentTargetWindowFrame(preferredTitle: stored.ad2WindowTitle) else { return stored.screen.cgPoint }
         let xScale = stored.ad2WindowSize.flatMap { $0.x > 0 && frame.size.width > 0 ? frame.size.width / $0.x : nil } ?? 1
         let yScale = stored.ad2WindowSize.flatMap { $0.y > 0 && frame.size.height > 0 ? frame.size.height / $0.y : nil } ?? 1
         return CGPoint(x: frame.origin.x + (offset.x * xScale), y: frame.origin.y + (offset.y * yScale))
     }
 
-    private func currentTargetWindowFrame(containing point: CGPoint? = nil) -> AD2WindowFrame? {
+    private func currentTargetWindowFrame(containing point: CGPoint? = nil, preferredTitle: String? = nil) -> AD2WindowFrame? {
         guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == automationTarget.bundleIdentifier }) else { return nil }
         let applicationElement = AXUIElementCreateApplication(app.processIdentifier)
         var windowsValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(applicationElement, kAXWindowsAttribute as CFString, &windowsValue) == .success,
               let windows = windowsValue as? [AXUIElement],
               !windows.isEmpty else { return nil }
-        if let point, let matched = windows.compactMap(windowFrame).first(where: { frame in
-            CGRect(origin: frame.origin, size: frame.size).contains(point)
-        }) {
-            return matched
+        let frames = windows.compactMap(windowFrame)
+        if let point {
+            let containing = frames.filter { CGRect(origin: $0.origin, size: $0.size).contains(point) }
+            if automationTarget == .logicPro, let editor = containing.first(where: isLikelyAD2Editor) {
+                return editor
+            }
+            if let matched = containing.first { return matched }
         }
         if automationTarget == .logicPro {
+            if let preferredTitle, let titleMatch = frames.first(where: { titlesMatch($0.title, preferredTitle) }) {
+                return titleMatch
+            }
+            if let editor = frames.first(where: isLikelyAD2Editor) {
+                return editor
+            }
             var focusedValue: CFTypeRef?
             if AXUIElementCopyAttributeValue(applicationElement, kAXFocusedWindowAttribute as CFString, &focusedValue) == .success,
                let focusedValue {
                 return windowFrame(focusedValue as! AXUIElement)
             }
         }
-        return windowFrame(windows.first!)
+        return frames.first
     }
 
     private func windowFrame(_ window: AXUIElement) -> AD2WindowFrame? {
@@ -529,7 +560,28 @@ final class AD2KitMutator: ObservableObject {
               AXValueGetValue(positionAXValue, .cgPoint, &position),
               AXValueGetType(sizeAXValue) == .cgSize,
               AXValueGetValue(sizeAXValue, .cgSize, &size) else { return nil }
-        return AD2WindowFrame(origin: position, size: size)
+        var titleValue: CFTypeRef?
+        let title: String?
+        if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleValue) == .success {
+            title = titleValue as? String
+        } else {
+            title = nil
+        }
+        return AD2WindowFrame(origin: position, size: size, title: title)
+    }
+
+    private func isLikelyAD2Editor(_ frame: AD2WindowFrame) -> Bool {
+        let title = frame.title?.lowercased() ?? ""
+        return title.contains("adrummer") || title.contains("addictive drums")
+    }
+
+    private func titlesMatch(_ candidate: String?, _ recorded: String) -> Bool {
+        let candidate = candidate?.lowercased() ?? ""
+        let recorded = recorded.lowercased()
+        guard !candidate.isEmpty, !recorded.isEmpty else { return false }
+        if candidate == recorded || candidate.contains(recorded) || recorded.contains(candidate) { return true }
+        guard let stablePrefix = recorded.split(separator: ":", maxSplits: 1).first, stablePrefix.count >= 4 else { return false }
+        return candidate.contains(stablePrefix)
     }
 
     private func click(_ point: CGPoint?) {

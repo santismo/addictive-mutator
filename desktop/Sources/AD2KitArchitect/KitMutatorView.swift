@@ -93,7 +93,17 @@ struct KitMutatorView: View {
                 .pickerStyle(.segmented)
                 .disabled(mutator.isBusy)
 
-                sectionHeading(number: "01", title: "Click-to-capture the hover arrows", subtitle: mutator.automationTarget == .standalone ? "Click Capture, then click the exact AD2 control once; that click is both captured and passed to AD2. Capture a row point first, then its Up and/or Down arrow. These points persist across restarts and follow AD2’s window position and proportional size changes." : "Open and focus the exact AD2 plug-in editor in Logic Pro first. Then capture its row, Up, and Down controls exactly as you did in standalone. Logic calibration is kept separate; leave that editor focused when testing or mutating.")
+                if mutator.automationTarget == .standalone {
+                    Toggle("Use Logic Pro mapping for any unmapped standalone controls", isOn: $mutator.useLogicCalibrationForStandalone)
+                        .toggleStyle(.switch)
+                        .tint(Color.orangeAccent)
+                        .disabled(mutator.isBusy)
+                    Text("Direct standalone captures always win. With this on, your mapped Logic Kit page is scaled to the standalone AD2 window for any remaining controls; test one arrow first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                sectionHeading(number: "01", title: "Click-to-capture the hover arrows", subtitle: mutator.automationTarget == .standalone ? "Click Capture, then click the exact AD2 control once; that click is both captured and passed to AD2. Capture a row point first, then its Up and/or Down arrow. These points persist across restarts and follow AD2’s window position and proportional size changes." : "Open and focus the exact AD2 plug-in editor in Logic Pro first. Then capture its row, Up, and Down controls exactly as you did in standalone. Logic calibration is saved independently and can optionally be used as the standalone fallback.")
 
                 kitSlotGrid
                 HStack {
@@ -257,7 +267,7 @@ private struct PieceCalibrationCard: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .tint(Color.orangeAccent)
-            .help(mutator.isPieceEnabled(piece) ? "(piece.name) will be randomized when it is calibrated" : "(piece.name) will be skipped")
+            .help(mutator.isPieceEnabled(piece) ? "\(piece.name) will be randomized when it is calibrated" : "\(piece.name) will be skipped")
             .disabled(mutator.isBusy)
             .frame(maxWidth: .infinity, alignment: .trailing)
 
